@@ -808,21 +808,40 @@ bool RecurrenceDescriptor::AddReductionVar(
         computeRecurrenceType(ExitInstruction, DB, AC, DT);
     if (ComputedType != RecurrenceType)
       return false;
+  } else if (RecurrenceType->isIntegerTy() &&
+             (Kind == RecurKind::Add || Kind == RecurKind::Sub ||
+              Kind == RecurKind::AddChainWithSubs || Kind == RecurKind::Mul ||
+              Kind == RecurKind::Or || Kind == RecurKind::And ||
+              Kind == RecurKind::Xor)) {
+    // Even if there is no 'and' mask on the phi (for instance, when BDCE or
+    // InstCombine simplified it away because the upper bits are not demanded
+    // or are known zero), narrow the reduction if all non-recurrence inputs to
+    // the reduction operations are single-use casts from ComputedType that
+    // will be eliminated.
+    Type *ComputedType;
+    bool ComputedIsSigned;
+    std::tie(ComputedType, ComputedIsSigned) =
+        computeRecurrenceType(ExitInstruction, DB, AC, DT);
+    unsigned ComputedBits = ComputedType->getScalarSizeInBits();
+    if (ComputedBits >= 8 &&
+        ComputedBits < RecurrenceType->getScalarSizeInBits() &&
+        all_of(VisitedInsts, [&](Instruction *I) {
+          if (I == Phi)
+            return true;
+          return all_of(I->operands(), [&](Value *Op) {
+            if (VisitedInsts.contains(dyn_cast<Instruction>(Op)))
+              return true;
+            auto *CI = dyn_cast<CastInst>(Op);
+            return CI && CI->hasOneUse() && TheLoop->contains(CI) &&
+                   CI->getSrcTy() == ComputedType;
+          });
+        })) {
+      RecurrenceType = ComputedType;
+      IsSigned = ComputedIsSigned;
+    }
   }
 
   // Collect cast instructions and the minimum width used by the recurrence.
-  // If the starting value is not the same as the phi node and the computed
-  // recurrence type is equal to the recurrence type, the recurrence expression
-  // will be represented in a narrower or wider type. If there are any cast
-  // instructions that will be unnecessary, collect them in CastsFromRecurTy.
-  // Note that the 'and' instruction was already included in this list.
-  //
-  // TODO: A better way to represent this may be to tag in some way all the
-  //       instructions that are a part of the reduction. The vectorizer cost
-  //       model could then apply the recurrence type to these instructions,
-  //       without needing a white list of instructions to ignore.
-  //       This may also be useful for the inloop reductions, if it can be
-  //       kept simple enough.
   collectCastInstrs(TheLoop, ExitInstruction, RecurrenceType, CastInsts,
                     MinWidthCastToRecurrenceType);
 

@@ -381,3 +381,224 @@ exit:
   %or.lcssa = phi i32 [ %or, %loop ]
   ret i32 %or.lcssa
 }
+
+define i8 @reduction_add_trunc_no_mask(ptr noalias nocapture %ptr, i32 %init) {
+; CHECK-LABEL: @reduction_add_trunc_no_mask(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[VECTOR_PH:%.*]]
+; CHECK:       vector.ph:
+; CHECK-NEXT:    [[TMP0:%.*]] = insertelement <8 x i32> zeroinitializer, i32 [[INIT:%.*]], i64 0
+; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
+; CHECK:       vector.body:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <8 x i32> [ [[TMP0]], [[VECTOR_PH]] ], [ [[TMP5:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[PTR:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <8 x i8>, ptr [[TMP1]], align 1
+; CHECK-NEXT:    [[TMP2:%.*]] = zext <8 x i8> [[WIDE_LOAD]] to <8 x i32>
+; CHECK-NEXT:    [[TMP3:%.*]] = add <8 x i32> [[VEC_PHI]], [[TMP2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = trunc <8 x i32> [[TMP3]] to <8 x i8>
+; CHECK-NEXT:    [[TMP5]] = zext <8 x i8> [[TMP4]] to <8 x i32>
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 8
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i32 [[INDEX_NEXT]], 256
+; CHECK-NEXT:    br i1 [[TMP6]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP7:![0-9]+]]
+; CHECK:       middle.block:
+; CHECK-NEXT:    [[TMP7:%.*]] = call i8 @llvm.vector.reduce.add.v8i8(<8 x i8> [[TMP4]])
+; CHECK-NEXT:    [[TMP8:%.*]] = zext i8 [[TMP7]] to i32
+; CHECK-NEXT:    br label [[FOR_END:%.*]]
+; CHECK:       for.end:
+; CHECK-NEXT:    [[RET:%.*]] = trunc i32 [[TMP8]] to i8
+; CHECK-NEXT:    ret i8 [[RET]]
+;
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i32 [ %iv.next, %for.body ], [ 0, %entry ]
+  %sum = phi i32 [ %add, %for.body ], [ %init, %entry ]
+  %gep = getelementptr inbounds i8, ptr %ptr, i32 %iv
+  %load = load i8, ptr %gep
+  %ext = zext i8 %load to i32
+  %add = add i32 %sum, %ext
+  %iv.next = add i32 %iv, 1
+  %exitcond = icmp eq i32 %iv.next, 256
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:
+  %ret = trunc i32 %add to i8
+  ret i8 %ret
+}
+
+define i32 @reduction_or_known_bits_no_mask(ptr noalias nocapture %ptr) {
+; CHECK-LABEL: @reduction_or_known_bits_no_mask(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[VECTOR_PH:%.*]]
+; CHECK:       vector.ph:
+; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
+; CHECK:       vector.body:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <8 x i32> [ zeroinitializer, [[VECTOR_PH]] ], [ [[TMP4:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP0:%.*]] = getelementptr inbounds i8, ptr [[PTR:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <8 x i8>, ptr [[TMP0]], align 1
+; CHECK-NEXT:    [[TMP1:%.*]] = zext <8 x i8> [[WIDE_LOAD]] to <8 x i32>
+; CHECK-NEXT:    [[TMP2:%.*]] = or <8 x i32> [[VEC_PHI]], [[TMP1]]
+; CHECK-NEXT:    [[TMP3:%.*]] = trunc <8 x i32> [[TMP2]] to <8 x i8>
+; CHECK-NEXT:    [[TMP4]] = zext <8 x i8> [[TMP3]] to <8 x i32>
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 8
+; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq i32 [[INDEX_NEXT]], 256
+; CHECK-NEXT:    br i1 [[TMP5]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP8:![0-9]+]]
+; CHECK:       middle.block:
+; CHECK-NEXT:    [[TMP6:%.*]] = call i8 @llvm.vector.reduce.or.v8i8(<8 x i8> [[TMP3]])
+; CHECK-NEXT:    [[TMP7:%.*]] = zext i8 [[TMP6]] to i32
+; CHECK-NEXT:    br label [[FOR_END:%.*]]
+; CHECK:       for.end:
+; CHECK-NEXT:    ret i32 [[TMP7]]
+;
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i32 [ %iv.next, %for.body ], [ 0, %entry ]
+  %sum = phi i32 [ %or, %for.body ], [ 0, %entry ]
+  %gep = getelementptr inbounds i8, ptr %ptr, i32 %iv
+  %load = load i8, ptr %gep
+  %ext = zext i8 %load to i32
+  %or = or i32 %sum, %ext
+  %iv.next = add i32 %iv, 1
+  %exitcond = icmp eq i32 %iv.next, 256
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:
+  ret i32 %or
+}
+
+define i32 @reduction_or_demanded_mask_exit(ptr noalias nocapture %ptr, i32 %init) {
+; CHECK-LABEL: @reduction_or_demanded_mask_exit(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[VECTOR_PH:%.*]]
+; CHECK:       vector.ph:
+; CHECK-NEXT:    [[TMP0:%.*]] = insertelement <8 x i32> zeroinitializer, i32 [[INIT:%.*]], i64 0
+; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
+; CHECK:       vector.body:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <8 x i32> [ [[TMP0]], [[VECTOR_PH]] ], [ [[TMP5:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[PTR:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <8 x i8>, ptr [[TMP1]], align 1
+; CHECK-NEXT:    [[TMP2:%.*]] = zext <8 x i8> [[WIDE_LOAD]] to <8 x i32>
+; CHECK-NEXT:    [[TMP3:%.*]] = or <8 x i32> [[VEC_PHI]], [[TMP2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = trunc <8 x i32> [[TMP3]] to <8 x i8>
+; CHECK-NEXT:    [[TMP5]] = zext <8 x i8> [[TMP4]] to <8 x i32>
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 8
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i32 [[INDEX_NEXT]], 256
+; CHECK-NEXT:    br i1 [[TMP6]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP9:![0-9]+]]
+; CHECK:       middle.block:
+; CHECK-NEXT:    [[TMP7:%.*]] = call i8 @llvm.vector.reduce.or.v8i8(<8 x i8> [[TMP4]])
+; CHECK-NEXT:    [[TMP8:%.*]] = zext i8 [[TMP7]] to i32
+; CHECK-NEXT:    br label [[FOR_END:%.*]]
+; CHECK:       for.end:
+; CHECK-NEXT:    [[MASKED:%.*]] = and i32 [[TMP8]], 128
+; CHECK-NEXT:    ret i32 [[MASKED]]
+;
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i32 [ %iv.next, %for.body ], [ 0, %entry ]
+  %sum = phi i32 [ %or, %for.body ], [ %init, %entry ]
+  %gep = getelementptr inbounds i8, ptr %ptr, i32 %iv
+  %load = load i8, ptr %gep
+  %ext = zext i8 %load to i32
+  %or = or i32 %sum, %ext
+  %iv.next = add i32 %iv, 1
+  %exitcond = icmp eq i32 %iv.next, 256
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:
+  %masked = and i32 %or, 128
+  ret i32 %masked
+}
+
+define i32 @reduction_or_unknown_start_wide_exit_neg(ptr noalias nocapture %ptr, i32 %init) {
+; CHECK-LABEL: @reduction_or_unknown_start_wide_exit_neg(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[VECTOR_PH:%.*]]
+; CHECK:       vector.ph:
+; CHECK-NEXT:    [[TMP0:%.*]] = insertelement <8 x i32> zeroinitializer, i32 [[INIT:%.*]], i64 0
+; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
+; CHECK:       vector.body:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <8 x i32> [ [[TMP0]], [[VECTOR_PH]] ], [ [[TMP3:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[PTR:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <8 x i8>, ptr [[TMP1]], align 1
+; CHECK-NEXT:    [[TMP2:%.*]] = zext <8 x i8> [[WIDE_LOAD]] to <8 x i32>
+; CHECK-NEXT:    [[TMP3]] = or <8 x i32> [[VEC_PHI]], [[TMP2]]
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 8
+; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq i32 [[INDEX_NEXT]], 256
+; CHECK-NEXT:    br i1 [[TMP4]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP10:![0-9]+]]
+; CHECK:       middle.block:
+; CHECK-NEXT:    [[TMP5:%.*]] = call i32 @llvm.vector.reduce.or.v8i32(<8 x i32> [[TMP3]])
+; CHECK-NEXT:    br label [[FOR_END:%.*]]
+; CHECK:       for.end:
+; CHECK-NEXT:    ret i32 [[TMP5]]
+;
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i32 [ %iv.next, %for.body ], [ 0, %entry ]
+  %sum = phi i32 [ %or, %for.body ], [ %init, %entry ]
+  %gep = getelementptr inbounds i8, ptr %ptr, i32 %iv
+  %load = load i8, ptr %gep
+  %ext = zext i8 %load to i32
+  %or = or i32 %sum, %ext
+  %iv.next = add i32 %iv, 1
+  %exitcond = icmp eq i32 %iv.next, 256
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:
+  ret i32 %or
+}
+
+define i32 @reduction_or_multiuse_cast_neg(ptr noalias nocapture %ptr, ptr noalias nocapture %dst) {
+; CHECK-LABEL: @reduction_or_multiuse_cast_neg(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[VECTOR_PH:%.*]]
+; CHECK:       vector.ph:
+; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
+; CHECK:       vector.body:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <8 x i32> [ zeroinitializer, [[VECTOR_PH]] ], [ [[TMP3:%.*]], [[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP0:%.*]] = getelementptr inbounds i8, ptr [[PTR:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <8 x i8>, ptr [[TMP0]], align 1
+; CHECK-NEXT:    [[TMP1:%.*]] = zext <8 x i8> [[WIDE_LOAD]] to <8 x i32>
+; CHECK-NEXT:    [[TMP2:%.*]] = getelementptr inbounds i32, ptr [[DST:%.*]], i32 [[INDEX]]
+; CHECK-NEXT:    store <8 x i32> [[TMP1]], ptr [[TMP2]], align 4
+; CHECK-NEXT:    [[TMP3]] = or <8 x i32> [[VEC_PHI]], [[TMP1]]
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 8
+; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq i32 [[INDEX_NEXT]], 256
+; CHECK-NEXT:    br i1 [[TMP4]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP11:![0-9]+]]
+; CHECK:       middle.block:
+; CHECK-NEXT:    [[TMP5:%.*]] = call i32 @llvm.vector.reduce.or.v8i32(<8 x i32> [[TMP3]])
+; CHECK-NEXT:    br label [[FOR_END:%.*]]
+; CHECK:       for.end:
+; CHECK-NEXT:    ret i32 [[TMP5]]
+;
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i32 [ %iv.next, %for.body ], [ 0, %entry ]
+  %sum = phi i32 [ %or, %for.body ], [ 0, %entry ]
+  %gep = getelementptr inbounds i8, ptr %ptr, i32 %iv
+  %load = load i8, ptr %gep
+  %ext = zext i8 %load to i32
+  %gep.dst = getelementptr inbounds i32, ptr %dst, i32 %iv
+  store i32 %ext, ptr %gep.dst
+  %or = or i32 %sum, %ext
+  %iv.next = add i32 %iv, 1
+  %exitcond = icmp eq i32 %iv.next, 256
+  br i1 %exitcond, label %for.end, label %for.body
+
+for.end:
+  ret i32 %or
+}
+
